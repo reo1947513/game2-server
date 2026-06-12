@@ -192,7 +192,8 @@ export class Room {
     dmg: number,
     killType: KillType,
     now: number,
-    headshot = false
+    headshot = false,
+    shotDist = 0
   ): void {
     const victim = this.players.get(victimId);
     if (!victim || victim.hp <= 0) return;
@@ -235,7 +236,8 @@ export class Room {
           { headshot, melee: killType === "melee" },
           now,
           this.pendingEvents,
-          this.tickCount
+          this.tickCount,
+          shotDist
         );
       } else {
         this.pendingEvents.push({
@@ -284,7 +286,14 @@ export class Room {
     // 高所キル判定：射撃者の高さが3m以上なら "high"（150点）。
     const shooterY = shooter.state ? shooter.state.position.y : 0;
     const killType: KillType = shooterY >= 3 ? "high" : "normal";
-    this.applyDamage(shooterId, target.id, dmg, killType, now, hit.headshot);
+    const shotDist = target.state
+      ? Math.hypot(
+          origin.x - target.state.position.x,
+          origin.y - target.state.position.y,
+          origin.z - target.state.position.z
+        )
+      : 0;
+    this.applyDamage(shooterId, target.id, dmg, killType, now, hit.headshot, shotDist);
   }
 
   // 近接攻撃の命中判定（ナイフ100／キック45）。クライアントが MELEE_HIT を送ると呼ばれる。

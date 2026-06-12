@@ -24,6 +24,7 @@ interface RPStat {
   deaths: number;
   score: number;
   headshots: number; // Supabase 用（Phase 5）
+  longestShot: number; // キル時の最長射撃距離（m。Supabase 用）
   roundWins: number; // サバイバルのラウンド勝利数
   onZipline: string | null; // 搭乗中のジップラインID
   ziplineStart: number; // 搭乗開始時刻（ms）
@@ -37,6 +38,7 @@ function newStat(): RPStat {
     deaths: 0,
     score: 0,
     headshots: 0,
+    longestShot: 0,
     roundWins: 0,
     onZipline: null,
     ziplineStart: 0,
@@ -145,7 +147,8 @@ export class RooftopDuelLogic {
     opts: RooftopKillOpts,
     now: number,
     events: GameEvent[],
-    tick: number
+    tick: number,
+    shotDist = 0
   ): void {
     if (this.phase !== "PLAYING") return;
     const vt = this.stats.get(victimId);
@@ -154,6 +157,7 @@ export class RooftopDuelLogic {
     const st = this.stats.get(shooterId);
     const self = shooterId === victimId;
     if (st && !self) {
+      if (shotDist > st.longestShot) st.longestShot = shotDist;
       let points = 100;
       if (opts.melee) {
         points = 300;
@@ -345,6 +349,7 @@ export class RooftopDuelLogic {
         deaths: s.deaths,
         score: s.score,
         headshots: s.headshots,
+        longestShot: Math.round(s.longestShot * 10) / 10,
         roundWins: s.roundWins,
       });
     }
