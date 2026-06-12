@@ -4,6 +4,9 @@
   "private": true,
   "description": "ARENA STRIKE online relay server (phase 1)",
   "main": "dist/index.js",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
