@@ -15,6 +15,7 @@ import { hitscan } from "./hitscan";
 import { TDMLogic, KillType } from "./TDMLogic";
 import { CoopLogic, CoopActor } from "./CoopLogic";
 import { RooftopDuelLogic } from "./RooftopDuelLogic";
+import type { RooftopRule } from "./netTypes";
 import { saveMatch } from "./supabase";
 
 interface RoomPlayer {
@@ -155,9 +156,9 @@ export class Room {
   }
 
   // ROOFTOP DUEL を開始する（ホストの START_GAME 時に index から呼ぶ）。
-  startRooftop(now: number): void {
+  startRooftop(now: number, rule: RooftopRule): void {
     this.rooftop = new RooftopDuelLogic();
-    this.rooftop.start([...this.players.keys()], this.maxPlayers);
+    this.rooftop.start([...this.players.keys()], this.maxPlayers, rule);
     this.matchStartedAt = now;
     this.savedResult = false;
     for (const p of this.players.values()) {
@@ -352,7 +353,9 @@ export class Room {
     if (
       !this.coop &&
       (!this.tdm || this.tdm.phase === "PLAYING") &&
-      (!this.rooftop || this.rooftop.phase === "PLAYING")
+      // サバイバルはリスポーンなし。デスマッチのみ復活させる。
+      (!this.rooftop ||
+        (this.rooftop.phase === "PLAYING" && this.rooftop.rule === "deathmatch"))
     ) {
       for (const p of this.players.values()) {
         if (p.hp <= 0 && p.respawnAt > 0 && now >= p.respawnAt) {
@@ -368,9 +371,29 @@ export class Room {
       this.tdm.tick(dt);
       if (this.tdm.consumeEnded()) void this.saveResult(now);
     }
-    // ROOFTOP DUEL：タイマー・ジップライン解放・終了判定
+    // ROOFTOP DUEL：収縮ゾーン・タイマー・ジップライン解放・ラウンド/終了判定
     if (this.rooftop) {
-      this.rooftop.tick(dt, now);
+      // サバイバルの収縮ゾーン：危険棟にいる生存者へ毎秒ダメージ
+      if (this.rooftop.rule === "survival" && this.rooftop.phase === "PLAYING") {
+        const dps = this.rooftop.dangerDps();
+        for (const p of this.players.values()) {
+          if (p.hp <= 0 || !p.state) continue;
+          const b = this.rooftop.buildingAt(p.state.position);
+          if (b && this.rooftop.dangerZones.includes(b)) {
+            p.hp = Math.max(0, p.hp - dps * dt);
+          }
+        }
+      }
+      const aliveIds: string[] = [];
+      for (const p of this.players.values()) if (p.hp > 0) aliveIds.push(p.id);
+      this.rooftop.tick(dt, now, aliveIds);
+      // サバイバルの次ラウンド開始：全員を蘇生・HP全快（再配置はクライアント側）
+      if (this.rooftop.consumeRoundRestart()) {
+        for (const p of this.players.values()) {
+          p.hp = 100;
+          p.respawnAt = 0;
+        }
+      }
       if (this.rooftop.consumeEnded()) void this.saveResult(now);
     }
     // コープ：敵AI・Wave進行・蘇生・全滅判定
