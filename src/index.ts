@@ -24,6 +24,7 @@ interface Conn {
   ws: WebSocket;
   playerId: string | null;
   roomCode: string | null;
+  statsId: string | null; // 端末固定ID（戦績の累積キー。未送信ならルーム内IDを使う）
 }
 
 function send(ws: WebSocket, msg: ServerMessage): void {
@@ -35,7 +36,7 @@ function sendError(ws: WebSocket, code: ErrorCode, message: string): void {
 }
 
 wss.on("connection", (ws: WebSocket) => {
-  const conn: Conn = { ws, playerId: null, roomCode: null };
+  const conn: Conn = { ws, playerId: null, roomCode: null, statsId: null };
 
   ws.on("message", (raw) => {
     let msg: ClientMessage;
@@ -54,6 +55,13 @@ wss.on("connection", (ws: WebSocket) => {
 
 function handle(conn: Conn, msg: ClientMessage): void {
   switch (msg.type) {
+    case "IDENTIFY": {
+      // 端末固定ID。戦績の累積キーとしてのみ使う（ルーム内IDはサーバー発行のまま）。
+      const id = (msg.payload.playerId || "").trim();
+      if (id) conn.statsId = id.slice(0, 64);
+      break;
+    }
+
     case "CREATE_ROOM": {
       const { room, playerId } = rooms.create(
         msg.payload.maxPlayers,
@@ -63,6 +71,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       );
       conn.playerId = playerId;
       conn.roomCode = room.code;
+      if (conn.statsId) room.setStatsId(playerId, conn.statsId);
       send(conn.ws, {
         type: "ROOM_CREATED",
         payload: { roomCode: room.code, playerId, players: room.infos(), maxPlayers: room.maxPlayers },
@@ -85,6 +94,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       const playerId = room.add(conn.ws, false);
       conn.playerId = playerId;
       conn.roomCode = code;
+      if (conn.statsId) room.setStatsId(playerId, conn.statsId);
       send(conn.ws, {
         type: "ROOM_JOINED",
         payload: { roomCode: code, playerId, players: room.infos(), maxPlayers: room.maxPlayers },

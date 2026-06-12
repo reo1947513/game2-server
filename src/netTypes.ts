@@ -116,6 +116,7 @@ export type ErrorCode =
 
 // ===== クライアント → サーバー =====
 export type ClientMessage =
+  | { type: "IDENTIFY"; payload: { playerId: string } } // 端末固定ID（戦績の累積キー）
   | { type: "CREATE_ROOM"; payload: { maxPlayers: number; mode: string; stage: string } }
   | { type: "JOIN_ROOM"; payload: { roomCode: string } }
   | { type: "PLAYER_STATE"; payload: PlayerState }

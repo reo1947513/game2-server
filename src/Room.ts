@@ -26,6 +26,7 @@ interface RoomPlayer {
   respawnAt: number; // 0=生存、>0なら復活予定時刻（ms）
   lastSeq: number; // 処理済みの入力seq
   rtt: number; // 直近のRTT（ms）
+  statsId: string; // 戦績の累積キー（端末固定ID。未IDENTIFYならルーム内IDと同じ）
 }
 
 const FRAG_RADIUS = 6;
@@ -77,9 +78,20 @@ export class Room {
       respawnAt: 0,
       lastSeq: 0,
       rtt: 0,
+      statsId: id,
     });
     if (isHost) this.hostId = id;
     return id;
+  }
+
+  // 端末固定ID（戦績の累積キー）を紐付ける。
+  setStatsId(id: string, statsId: string): void {
+    const p = this.players.get(id);
+    if (p) p.statsId = statsId;
+  }
+
+  private statsIdOf(id: string): string {
+    return this.players.get(id)?.statsId ?? id;
   }
 
   remove(id: string): void {
@@ -314,11 +326,15 @@ export class Room {
     let players: Array<{ playerId: string; kills: number; deaths: number; score: number; coopWave?: number }>;
     if (this.coop) {
       result = this.coop.resultData();
-      players = this.coop.playerSummaries();
+      // 戦績の保存キーを端末固定ID（statsId）へ置き換える
+      players = this.coop.playerSummaries().map((p) => ({
+        ...p,
+        playerId: this.statsIdOf(p.playerId),
+      }));
     } else if (this.tdm) {
       result = this.tdm.resultData();
       players = [...this.tdm.stats.entries()].map(([id, s]) => ({
-        playerId: id,
+        playerId: this.statsIdOf(id),
         kills: s.kills,
         deaths: s.deaths,
         score: s.score,
