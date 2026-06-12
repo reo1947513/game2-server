@@ -33,6 +33,9 @@ interface Enemy {
   currentTarget: string | null; // 追跡中のプレイヤーID
   flashedBy: string | null; // フラッシュを当てた投擲者ID
   flashedUntil: number; // フラッシュ有効期限（epoch ms）
+  spawnX: number; // スポーン位置（埋まり時のリセット用）
+  spawnY: number;
+  spawnZ: number;
 }
 
 interface CoopStat {
@@ -102,7 +105,7 @@ export class CoopLogic {
   }
 
   // ===== 毎tick =====
-  tick(dt: number, actors: Map<string, CoopActor>, _colliders: Box[]): void {
+  tick(dt: number, actors: Map<string, CoopActor>, colliders: Box[]): void {
     if (this.phase === "RESULT") return;
 
     // 新規参加者がいればALIVEで登録（基本は固定ロスター）
@@ -144,6 +147,8 @@ export class CoopLogic {
           const inv = 1 / (horiz || 1);
           e.x += dx * inv * e.speed * dt;
           e.z += dz * inv * e.speed * dt;
+          // 壁（AABBコライダー）との押し出し。接線方向へスライドする。
+          this.resolveCollision(e, colliders);
         }
         e.y += (ty - e.y) * Math.min(1, dt * 4);
         if (horiz <= contact && e.attackCd <= 0) {
@@ -388,6 +393,45 @@ export class CoopLogic {
     }
   }
 
+  // 敵をAABBコライダーの外へ押し出す（最小めり込み軸）。
+  // コライダーが無ければ何もしない（従来どおり直進）。床は足元以下なので無視する。
+  private resolveCollision(e: Enemy, colliders: Box[]): void {
+    if (colliders.length === 0) return;
+    const ER = 0.46; // 敵の半径
+    for (const b of colliders) {
+      if (b.max.y <= e.y + 0.25) continue; // 足元以下（床）は無視
+      if (b.min.y >= e.y + e.height) continue; // 頭上は無視
+      const minX = b.min.x - ER;
+      const maxX = b.max.x + ER;
+      const minZ = b.min.z - ER;
+      const maxZ = b.max.z + ER;
+      if (e.x <= minX || e.x >= maxX || e.z <= minZ || e.z >= maxZ) continue;
+      // 各面までのめり込み量を求め、最小の軸へ押し出す
+      const penL = e.x - minX;
+      const penR = maxX - e.x;
+      const penD = e.z - minZ;
+      const penU = maxZ - e.z;
+      const px = Math.min(penL, penR);
+      const pz = Math.min(penD, penU);
+      if (px <= pz) {
+        e.x += penL < penR ? -penL : penR;
+      } else {
+        e.z += penD < penU ? -penD : penU;
+      }
+    }
+    // 押し出しても箱の内部に残っている（埋まった）場合はスポーンへリセット
+    for (const b of colliders) {
+      if (b.max.y <= e.y + 0.25) continue;
+      if (b.min.y >= e.y + e.height) continue;
+      if (e.x > b.min.x && e.x < b.max.x && e.z > b.min.z && e.z < b.max.z) {
+        e.x = e.spawnX;
+        e.y = e.spawnY;
+        e.z = e.spawnZ;
+        return;
+      }
+    }
+  }
+
   // ===== Waveスポーン =====
   private spawnWave(n: number, actors: Map<string, CoopActor>): void {
     const comp = this.composition(n);
@@ -436,6 +480,9 @@ export class CoopLogic {
       currentTarget: null,
       flashedBy: null,
       flashedUntil: 0,
+      spawnX: x,
+      spawnY: y,
+      spawnZ: z,
     };
   }
 
