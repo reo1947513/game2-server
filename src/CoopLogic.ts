@@ -30,6 +30,9 @@ interface Enemy {
   half: number; // 当たり判定の半径（XZ）
   height: number; // 当たり判定の高さ
   attackCd: number; // 接触ダメージのクールダウン
+  currentTarget: string | null; // 追跡中のプレイヤーID
+  flashedBy: string | null; // フラッシュを当てた投擲者ID
+  flashedUntil: number; // フラッシュ有効期限（epoch ms）
 }
 
 interface CoopStat {
@@ -68,6 +71,14 @@ export class CoopLogic {
   private reviveIntent = new Map<string, boolean>();
   private enemyCounter = 0;
   private endedFlag = false;
+  private events: GameEvent[] = []; // HIT/COOP_BONUS など、Roomが毎tickで取り込む
+
+  // Roomがこのtickで溜まったイベントを取り出す。
+  drainEvents(): GameEvent[] {
+    const e = this.events;
+    this.events = [];
+    return e;
+  }
 
   start(actors: Map<string, CoopActor>): void {
     this.phase = "WAVE";
@@ -120,6 +131,7 @@ export class CoopLogic {
     for (const e of this.enemies) {
       e.attackCd = Math.max(0, e.attackCd - dt);
       const target = this.nearest(e, alive);
+      e.currentTarget = target ? target.id : null;
       if (target && target.state) {
         const tx = target.state.position.x;
         const ty = target.state.position.y;
@@ -150,7 +162,8 @@ export class CoopLogic {
         const d = Math.hypot(a.state.position.x - e.x, a.state.position.z - e.z);
         if (d <= e.half + 1.2) {
           threatened = true;
-          break;
+          // ダウン中の味方に張り付いている敵として記録（フォローキル判定用）
+          e.currentTarget = a.id;
         }
       }
       if (threatened) {
@@ -266,8 +279,7 @@ export class CoopLogic {
     colliders: Box[],
     damage: number,
     attackerId: string,
-    events: GameEvent[],
-    tick: number
+    now: number
   ): void {
     if (this.phase !== "WAVE") return;
     // 壁までの距離
@@ -286,13 +298,13 @@ export class CoopLogic {
       }
     }
     if (!hit) return;
-    events.push({
+    this.events.push({
       type: "HIT",
-      tick,
+      tick: 0,
       payload: { shooterId: attackerId, targetId: hit.id, damage, x: hit.x, y: hit.y, z: hit.z },
     });
     hit.hp -= damage;
-    if (hit.hp <= 0) this.killEnemy(hit, attackerId);
+    if (hit.hp <= 0) this.killEnemy(hit, attackerId, now);
   }
 
   meleeEnemies(
@@ -301,7 +313,8 @@ export class CoopLogic {
     pitch: number,
     range: number,
     damage: number,
-    attackerId: string
+    attackerId: string,
+    now: number
   ): void {
     if (this.phase !== "WAVE") return;
     const cp = Math.cos(pitch);
@@ -316,29 +329,63 @@ export class CoopLogic {
       const dot = dx * inv * fx + dz * inv * fz;
       if (dot > 0.4) {
         e.hp -= damage;
-        if (e.hp <= 0) this.killEnemy(e, attackerId);
+        if (e.hp <= 0) this.killEnemy(e, attackerId, now);
       }
     }
   }
 
-  grenadeEnemies(pos: Vec3, radius: number, ownerId: string): void {
+  grenadeEnemies(pos: Vec3, radius: number, ownerId: string, now: number): void {
     if (this.phase !== "WAVE") return;
     for (const e of [...this.enemies]) {
       const d = Math.hypot(e.x - pos.x, e.y + e.height * 0.5 - pos.y, e.z - pos.z);
       if (d > radius) continue;
       const falloff = 1 - d / radius;
       e.hp -= Math.round(Math.max(20, 160 * falloff));
-      if (e.hp <= 0) this.killEnemy(e, ownerId);
+      if (e.hp <= 0) this.killEnemy(e, ownerId, now);
     }
   }
 
-  private killEnemy(e: Enemy, attackerId: string): void {
-    const idx = this.enemies.indexOf(e);
-    if (idx >= 0) this.enemies.splice(idx, 1);
-    const st = this.stats.get(attackerId);
-    const pts = BASE[e.etype].pts;
+  // フラッシュ起爆：範囲内の敵に「怯み」状態を付与する（フラッシュアシスト判定用）。
+  flashEnemies(pos: Vec3, radius: number, flasherId: string, now: number): void {
+    for (const e of this.enemies) {
+      const d = Math.hypot(e.x - pos.x, e.y + e.height * 0.5 - pos.y, e.z - pos.z);
+      if (d > radius) continue;
+      e.flashedBy = flasherId;
+      e.flashedUntil = now + 1500;
+    }
+  }
+
+  private award(playerId: string, pts: number): void {
+    const st = this.stats.get(playerId);
     if (st) st.score += pts;
     this.totalScore += pts;
+  }
+
+  private pushBonus(playerId: string, kind: "FOLLOW_KILL" | "FLASH_ASSIST", points: number): void {
+    this.events.push({ type: "COOP_BONUS", tick: 0, payload: { playerId, kind, points } });
+  }
+
+  private killEnemy(e: Enemy, killerId: string, now: number): void {
+    const idx = this.enemies.indexOf(e);
+    if (idx >= 0) this.enemies.splice(idx, 1);
+
+    // 基本撃破点
+    this.award(killerId, BASE[e.etype].pts);
+
+    // フォローキル：ダウン中の味方に張り付いていた敵を、別プレイヤーが倒した
+    if (e.currentTarget && e.currentTarget !== killerId) {
+      const tgt = this.stats.get(e.currentTarget);
+      if (tgt && tgt.status === "DOWN") {
+        this.award(killerId, 300);
+        this.pushBonus(killerId, "FOLLOW_KILL", 300);
+      }
+    }
+
+    // フラッシュアシスト：フラッシュ有効中の敵を、投擲者以外が倒した
+    if (e.flashedBy && now < e.flashedUntil && e.flashedBy !== killerId) {
+      this.award(e.flashedBy, 150);
+      this.pushBonus(e.flashedBy, "FLASH_ASSIST", 150);
+    }
   }
 
   // ===== Waveスポーン =====
@@ -386,6 +433,9 @@ export class CoopLogic {
       half: b.half,
       height: b.height,
       attackCd: 0,
+      currentTarget: null,
+      flashedBy: null,
+      flashedUntil: 0,
     };
   }
 
@@ -451,6 +501,9 @@ export class CoopLogic {
       position: { x: e.x, y: e.y, z: e.z },
       hp: e.hp,
       maxHp: e.maxHp,
+      currentTarget: e.currentTarget,
+      flashedBy: e.flashedBy,
+      flashedUntil: e.flashedUntil,
     }));
     const players = [...actors.values()].map((a) => {
       const st = this.stats.get(a.id) ?? { status: "ALIVE" as CoopStatus, downTimer: 0, reviveProgress: 0, score: 0 };

@@ -209,15 +209,7 @@ export class Room {
 
     // コープ：プレイヤーではなく敵に当てる
     if (this.coop) {
-      this.coop.damageEnemyShot(
-        origin,
-        direction,
-        this.colliders,
-        damage,
-        shooterId,
-        this.pendingEvents,
-        this.tickCount
-      );
+      this.coop.damageEnemyShot(origin, direction, this.colliders, damage, shooterId, now);
       return;
     }
 
@@ -249,7 +241,7 @@ export class Room {
 
     // コープ：敵に当てる
     if (this.coop) {
-      this.coop.meleeEnemies(a.state.position, a.state.yaw, a.state.pitch, range, dmg, attackerId);
+      this.coop.meleeEnemies(a.state.position, a.state.yaw, a.state.pitch, range, dmg, attackerId, now);
       return;
     }
     const cp = Math.cos(a.state.pitch);
@@ -314,6 +306,7 @@ export class Room {
     // コープ：敵AI・Wave進行・蘇生・全滅判定
     if (this.coop) {
       this.coop.tick(dt, this.actors(), this.colliders);
+      for (const e of this.coop.drainEvents()) this.pendingEvents.push(e);
       if (this.coop.consumeEnded()) void this.saveResult(now);
     }
     return this.buildWorldState(now);
@@ -358,7 +351,7 @@ export class Room {
     if (g.type === "frag") {
       if (this.coop) {
         // コープ：範囲内の敵へダメージ（プレイヤー同士の被弾はなし）
-        this.coop.grenadeEnemies(pos, FRAG_RADIUS, g.ownerId);
+        this.coop.grenadeEnemies(pos, FRAG_RADIUS, g.ownerId, now);
       } else {
         // 範囲内のプレイヤーへダメージ（投擲者は自爆ダメージ控えめ）
         for (const p of this.players.values()) {
@@ -382,6 +375,8 @@ export class Room {
         payload: { x: pos.x, y: pos.y, z: pos.z, ownerId: g.ownerId },
       });
     } else {
+      // コープ：範囲内の敵に「怯み」を付与（フラッシュアシスト判定用）
+      if (this.coop) this.coop.flashEnemies(pos, 9, g.ownerId, now);
       // フラッシュは各クライアントが視線で独立計算するため、位置だけ配る
       this.pendingEvents.push({
         type: "FLASHBANG_EXPLODE",

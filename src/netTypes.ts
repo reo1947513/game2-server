@@ -31,7 +31,7 @@ export interface ProjectileState {
 
 // 命中・撃破・爆発などの単発イベント。
 export interface GameEvent {
-  type: "HIT" | "KILL" | "GRENADE_EXPLODE" | "FLASHBANG_EXPLODE";
+  type: "HIT" | "KILL" | "GRENADE_EXPLODE" | "FLASHBANG_EXPLODE" | "COOP_BONUS";
   payload: Record<string, unknown>;
   tick: number;
 }
@@ -65,6 +65,9 @@ export interface ServerEnemyState {
   position: Vec3;
   hp: number;
   maxHp: number;
+  currentTarget: string | null; // 追跡中のプレイヤーID（フォローキル判定用）
+  flashedBy: string | null; // フラッシュを当てた投擲者ID
+  flashedUntil: number; // フラッシュ有効期限（epoch ms）
 }
 
 export type CoopStatus = "ALIVE" | "DOWN" | "DEAD";
