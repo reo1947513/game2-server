@@ -42,6 +42,20 @@ export interface Box {
   max: Vec3;
 }
 
+export type Team = "RED" | "BLUE";
+
+// チームデスマッチの共有状態（WorldStateに同梱して全クライアントへ配る）。
+export interface TDMShared {
+  phase: "PLAYING" | "RESULT";
+  timeRemaining: number; // 秒
+  scores: { RED: number; BLUE: number };
+  kills: { RED: number; BLUE: number };
+  killLimit: number;
+  teams: Record<string, Team>; // playerId → チーム
+  respawn: Record<string, number>; // playerId → 復活までの残り秒（0=生存）
+  winner?: Team | "DRAW";
+}
+
 // ロビーに出すプレイヤー情報。
 export interface PlayerInfo {
   playerId: string;
@@ -57,6 +71,7 @@ export interface WorldState {
   projectiles: ProjectileState[]; // サーバー権威のグレネード飛行状態
   events: GameEvent[]; // このtickで発生した単発イベント
   lastProcessedSeq: Record<string, number>; // プレイヤーごとの処理済みseq
+  tdm?: TDMShared; // チームデスマッチ時のみ
 }
 
 export type ErrorCode =
@@ -76,12 +91,13 @@ export type ClientMessage =
   | { type: "SET_COLLIDERS"; payload: { colliders: Box[] } } // ホストがステージの当たり判定を送る
   | { type: "SHOT"; payload: { origin: Vec3; direction: Vec3; seq: number; rtt: number; damage: number } }
   | { type: "THROW_GRENADE"; payload: { gtype: "frag" | "flash"; origin: Vec3; velocity: Vec3 } }
+  | { type: "MELEE_HIT"; payload: { kind: "knife" | "kick" } }
   | { type: "PING"; payload: { clientTime: number } };
 
 // ===== サーバー → クライアント =====
 export type ServerMessage =
-  | { type: "ROOM_CREATED"; payload: { roomCode: string; playerId: string; players: PlayerInfo[] } }
-  | { type: "ROOM_JOINED"; payload: { roomCode: string; playerId: string; players: PlayerInfo[] } }
+  | { type: "ROOM_CREATED"; payload: { roomCode: string; playerId: string; players: PlayerInfo[]; maxPlayers: number } }
+  | { type: "ROOM_JOINED"; payload: { roomCode: string; playerId: string; players: PlayerInfo[]; maxPlayers: number } }
   | { type: "PLAYER_JOINED"; payload: PlayerInfo }
   | { type: "PLAYER_LEFT"; payload: { playerId: string } }
   | { type: "GAME_START"; payload: { mode: string; stage: string } }

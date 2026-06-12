@@ -12,6 +12,8 @@ import {
 import { StateHistory } from "./StateHistory";
 import { ServerGrenade } from "./ServerGrenade";
 import { hitscan } from "./hitscan";
+import { TDMLogic, KillType } from "./TDMLogic";
+import { saveMatch } from "./supabase";
 
 interface RoomPlayer {
   id: string;
@@ -41,6 +43,11 @@ export class Room {
   private projectiles: ServerGrenade[] = [];
   private pendingEvents: GameEvent[] = [];
   private colliders: Box[] = [];
+
+  // ===== チームデスマッチ（mode === "tdm" のとき有効） =====
+  private tdm: TDMLogic | null = null;
+  private matchStartedAt = 0;
+  private savedResult = false;
 
   constructor(
     public code: string,
@@ -95,6 +102,61 @@ export class Room {
     this.colliders = boxes;
   }
 
+  // チームデスマッチを開始する（ホストの START_GAME 時に index から呼ぶ）。
+  startTDM(now: number): void {
+    this.tdm = new TDMLogic();
+    this.tdm.start([...this.players.keys()], this.hostId, this.maxPlayers);
+    this.matchStartedAt = now;
+    this.savedResult = false;
+    for (const p of this.players.values()) {
+      p.hp = 100;
+      p.respawnAt = 0;
+    }
+  }
+
+  // ダメージ適用の一元化。HITイベントを積み、撃破時はKILL／TDMスコアと復活予約を行う。
+  private applyDamage(
+    attackerId: string,
+    victimId: string,
+    dmg: number,
+    killType: KillType,
+    now: number,
+    headshot = false
+  ): void {
+    const victim = this.players.get(victimId);
+    if (!victim || victim.hp <= 0) return;
+    victim.hp = Math.max(0, victim.hp - dmg);
+    if (this.tdm) this.tdm.recordDamage(victimId, attackerId, dmg);
+
+    const pos = victim.state ? victim.state.position : { x: 0, y: 0, z: 0 };
+    this.pendingEvents.push({
+      type: "HIT",
+      tick: this.tickCount,
+      payload: {
+        shooterId: attackerId,
+        targetId: victimId,
+        damage: dmg,
+        headshot,
+        x: pos.x,
+        y: pos.y,
+        z: pos.z,
+      },
+    });
+
+    if (victim.hp <= 0) {
+      victim.respawnAt = now + RESPAWN_DELAY;
+      if (this.tdm) {
+        this.tdm.onKill(attackerId, victimId, killType, now, this.pendingEvents, this.tickCount);
+      } else {
+        this.pendingEvents.push({
+          type: "KILL",
+          tick: this.tickCount,
+          payload: { shooterId: attackerId, targetId: victimId },
+        });
+      }
+    }
+  }
+
   // 射撃の命中判定（ラグ補償あり）。
   processShot(
     shooterId: string,
@@ -106,6 +168,7 @@ export class Room {
   ): void {
     const shooter = this.players.get(shooterId);
     if (!shooter || shooter.hp <= 0) return;
+    if (this.tdm && this.tdm.phase !== "PLAYING") return;
 
     const compensated = now - rtt / 2 - RENDER_DELAY;
     const snap = this.history.getAt(compensated);
@@ -118,28 +181,39 @@ export class Room {
     if (!target || target.hp <= 0) return;
 
     const dmg = hit.headshot ? damage * 2 : damage;
-    target.hp = Math.max(0, target.hp - dmg);
-    const pos = target.state ? target.state.position : { x: 0, y: 0, z: 0 };
-    this.pendingEvents.push({
-      type: "HIT",
-      tick: this.tickCount,
-      payload: {
-        shooterId,
-        targetId: target.id,
-        damage: dmg,
-        headshot: hit.headshot,
-        x: pos.x,
-        y: pos.y,
-        z: pos.z,
-      },
-    });
-    if (target.hp <= 0) {
-      this.pendingEvents.push({
-        type: "KILL",
-        tick: this.tickCount,
-        payload: { shooterId, targetId: target.id },
-      });
-      target.respawnAt = now + RESPAWN_DELAY;
+    // 高所キル判定：射撃者の高さが3m以上なら "high"（150点）。
+    const shooterY = shooter.state ? shooter.state.position.y : 0;
+    const killType: KillType = shooterY >= 3 ? "high" : "normal";
+    this.applyDamage(shooterId, target.id, dmg, killType, now, hit.headshot);
+  }
+
+  // 近接攻撃の命中判定（ナイフ100／キック45）。クライアントが MELEE_HIT を送ると呼ばれる。
+  processMelee(attackerId: string, kind: "knife" | "kick", now: number): void {
+    const a = this.players.get(attackerId);
+    if (!a || a.hp <= 0 || !a.state) return;
+    if (this.tdm && this.tdm.phase !== "PLAYING") return;
+
+    const range = kind === "knife" ? 2.5 : 2.7;
+    const dmg = kind === "knife" ? 100 : 45;
+    const cp = Math.cos(a.state.pitch);
+    const sp = Math.sin(a.state.pitch);
+    const fx = -cp * Math.sin(a.state.yaw);
+    const fy = sp;
+    const fz = -cp * Math.cos(a.state.yaw);
+    const ax = a.state.position.x;
+    const ay = a.state.position.y;
+    const az = a.state.position.z;
+
+    for (const t of this.players.values()) {
+      if (t.id === attackerId || t.hp <= 0 || !t.state) continue;
+      const dx = t.state.position.x - ax;
+      const dy = t.state.position.y - ay;
+      const dz = t.state.position.z - az;
+      const horiz = Math.hypot(dx, dz);
+      if (horiz > range) continue;
+      const dist = Math.hypot(dx, dy, dz) || 1;
+      const dot = (dx / dist) * fx + (dy / dist) * fy + (dz / dist) * fz;
+      if (dot > 0.5) this.applyDamage(attackerId, t.id, dmg, "melee", now);
     }
   }
 
@@ -170,9 +244,36 @@ export class Room {
       if (p.hp <= 0 && p.respawnAt > 0 && now >= p.respawnAt) {
         p.hp = 100;
         p.respawnAt = 0;
+        if (this.tdm) this.tdm.onRespawn(p.id);
       }
     }
+    // チームデスマッチのタイマーと終了判定
+    if (this.tdm) {
+      this.tdm.tick(dt);
+      if (this.tdm.consumeEnded()) void this.saveResult(now);
+    }
     return this.buildWorldState(now);
+  }
+
+  // 試合結果を Supabase へ保存する（環境変数が無ければ supabase 側でスキップ）。
+  private async saveResult(now: number): Promise<void> {
+    if (!this.tdm || this.savedResult) return;
+    this.savedResult = true;
+    const result = this.tdm.resultData();
+    const players = [...this.tdm.stats.entries()].map(([id, s]) => ({
+      playerId: id,
+      kills: s.kills,
+      deaths: s.deaths,
+      score: s.score,
+    }));
+    await saveMatch({
+      roomCode: this.code,
+      mode: this.mode,
+      startedAt: new Date(this.matchStartedAt).toISOString(),
+      endedAt: new Date(now).toISOString(),
+      result,
+      players,
+    });
   }
 
   private detonate(g: ServerGrenade, now: number): void {
@@ -191,15 +292,7 @@ export class Room {
           p.id === g.ownerId
             ? Math.round(55 * falloff)
             : Math.round(Math.max(15, 120 * falloff));
-        p.hp = Math.max(0, p.hp - dmg);
-        if (p.hp <= 0) {
-          this.pendingEvents.push({
-            type: "KILL",
-            tick: this.tickCount,
-            payload: { shooterId: g.ownerId, targetId: p.id },
-          });
-          p.respawnAt = now + RESPAWN_DELAY;
-        }
+        this.applyDamage(g.ownerId, p.id, dmg, "grenade", now);
       }
       this.pendingEvents.push({
         type: "GRENADE_EXPLODE",
@@ -240,6 +333,15 @@ export class Room {
     const events = this.pendingEvents;
     this.pendingEvents = [];
 
+    let tdmShared: WorldState["tdm"];
+    if (this.tdm) {
+      const respawn: Record<string, number> = {};
+      for (const p of this.players.values()) {
+        respawn[p.id] = p.respawnAt > 0 ? Math.max(0, (p.respawnAt - now) / 1000) : 0;
+      }
+      tdmShared = this.tdm.shared(respawn);
+    }
+
     return {
       tick: this.tickCount,
       timestamp: now,
@@ -247,6 +349,7 @@ export class Room {
       projectiles: this.projectiles.map((g) => g.toState()),
       events,
       lastProcessedSeq,
+      tdm: tdmShared,
     };
   }
 

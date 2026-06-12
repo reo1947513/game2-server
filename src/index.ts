@@ -65,7 +65,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       conn.roomCode = room.code;
       send(conn.ws, {
         type: "ROOM_CREATED",
-        payload: { roomCode: room.code, playerId, players: room.infos() },
+        payload: { roomCode: room.code, playerId, players: room.infos(), maxPlayers: room.maxPlayers },
       });
       break;
     }
@@ -87,7 +87,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       conn.roomCode = code;
       send(conn.ws, {
         type: "ROOM_JOINED",
-        payload: { roomCode: code, playerId, players: room.infos() },
+        payload: { roomCode: code, playerId, players: room.infos(), maxPlayers: room.maxPlayers },
       });
       const info = room.info(playerId);
       if (info) room.broadcastExcept(playerId, { type: "PLAYER_JOINED", payload: info });
@@ -136,6 +136,13 @@ function handle(conn: Conn, msg: ClientMessage): void {
       break;
     }
 
+    case "MELEE_HIT": {
+      if (!conn.roomCode || !conn.playerId) break;
+      const room = rooms.get(conn.roomCode);
+      room?.processMelee(conn.playerId, msg.payload.kind, Date.now());
+      break;
+    }
+
     case "PING": {
       send(conn.ws, {
         type: "PONG",
@@ -148,6 +155,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       if (!conn.roomCode || !conn.playerId) break;
       const room = rooms.get(conn.roomCode);
       if (room && room.hostId === conn.playerId) {
+        if (room.mode === "tdm") room.startTDM(Date.now());
         room.broadcast({
           type: "GAME_START",
           payload: { mode: room.mode, stage: room.stage },
