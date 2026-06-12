@@ -95,6 +95,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       conn.playerId = playerId;
       conn.roomCode = code;
       if (conn.statsId) room.setStatsId(playerId, conn.statsId);
+      room.ensureTdmMember(playerId); // 進行中TDMなら即チーム割当（tdm未開始ならno-op）
       send(conn.ws, {
         type: "ROOM_JOINED",
         payload: { roomCode: code, playerId, players: room.infos(), maxPlayers: room.maxPlayers },

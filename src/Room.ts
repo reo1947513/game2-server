@@ -155,6 +155,11 @@ export class Room {
     if (this.coop) this.coop.setRevive(id, active);
   }
 
+  // 進行中のTDMに途中参加したプレイヤーをチームへ割り当てる（tdm未開始ならno-op）。
+  ensureTdmMember(id: string): void {
+    if (this.tdm) this.tdm.ensureMember(id);
+  }
+
   // ダメージ適用の一元化。HITイベントを積み、撃破時はKILL／TDMスコアと復活予約を行う。
   private applyDamage(
     attackerId: string,
@@ -166,11 +171,13 @@ export class Room {
   ): void {
     const victim = this.players.get(victimId);
     if (!victim || victim.hp <= 0) return;
-    // TDM：同じチームへのダメージは無効（自爆＝自分自身は許可）
-    if (this.tdm && attackerId !== victimId) {
-      const ta = this.tdm.teams.get(attackerId);
-      const tv = this.tdm.teams.get(victimId);
-      if (ta && tv && ta === tv) return;
+    // TDM：途中参加者をチームへ割り当ててから、同チームへのダメージは無効化する（自爆は許可）
+    if (this.tdm) {
+      this.tdm.ensureMember(attackerId);
+      this.tdm.ensureMember(victimId);
+      if (attackerId !== victimId && this.tdm.teams.get(attackerId) === this.tdm.teams.get(victimId)) {
+        return;
+      }
     }
     victim.hp = Math.max(0, victim.hp - dmg);
     if (this.tdm) this.tdm.recordDamage(victimId, attackerId, dmg);

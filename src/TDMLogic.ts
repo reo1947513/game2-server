@@ -55,6 +55,20 @@ export class TDMLogic {
     }
   }
 
+  // 開始後に参加したプレイヤーを、人数が少ない方のチームへ割り当てる（既割当なら何もしない）。
+  ensureMember(id: string): void {
+    if (this.teams.has(id)) return;
+    let red = 0;
+    let blue = 0;
+    for (const t of this.teams.values()) {
+      if (t === "RED") red++;
+      else blue++;
+    }
+    const team: Team = red <= blue ? "RED" : "BLUE";
+    this.teams.set(id, team);
+    this.stats.set(id, { kills: 0, deaths: 0, assists: 0, score: 0 });
+  }
+
   recordDamage(victimId: string, attackerId: string, dmg: number): void {
     if (attackerId === victimId) return;
     let m = this.damageLog.get(victimId);
