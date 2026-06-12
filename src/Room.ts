@@ -162,6 +162,12 @@ export class Room {
   ): void {
     const victim = this.players.get(victimId);
     if (!victim || victim.hp <= 0) return;
+    // TDM：同じチームへのダメージは無効（自爆＝自分自身は許可）
+    if (this.tdm && attackerId !== victimId) {
+      const ta = this.tdm.teams.get(attackerId);
+      const tv = this.tdm.teams.get(victimId);
+      if (ta && tv && ta === tv) return;
+    }
     victim.hp = Math.max(0, victim.hp - dmg);
     if (this.tdm) this.tdm.recordDamage(victimId, attackerId, dmg);
 
