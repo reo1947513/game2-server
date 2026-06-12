@@ -7,6 +7,15 @@ interface TDMPlayerStat {
   deaths: number;
   assists: number;
   score: number;
+  // キル種別の内訳（リザルトの内訳表示用）
+  high: number; // 高所キル
+  melee: number; // 近接キル
+  grenade: number; // グレネードキル
+  streak: number; // 連続キルボーナスの回数
+}
+
+function newStat(): TDMPlayerStat {
+  return { kills: 0, deaths: 0, assists: 0, score: 0, high: 0, melee: 0, grenade: 0, streak: 0 };
 }
 
 // チームデスマッチのルール・スコア管理。Room から委譲される。
@@ -51,7 +60,7 @@ export class TDMLogic {
       this.teams.set(id, t);
       if (t === "RED") red++;
       else blue++;
-      this.stats.set(id, { kills: 0, deaths: 0, assists: 0, score: 0 });
+      this.stats.set(id, newStat());
     }
   }
 
@@ -66,7 +75,7 @@ export class TDMLogic {
     }
     const team: Team = red <= blue ? "RED" : "BLUE";
     this.teams.set(id, team);
-    this.stats.set(id, { kills: 0, deaths: 0, assists: 0, score: 0 });
+    this.stats.set(id, newStat());
   }
 
   recordDamage(victimId: string, attackerId: string, dmg: number): void {
@@ -99,13 +108,23 @@ export class TDMLogic {
 
     if (st && team && !self && !friendly) {
       let points = 100;
-      if (killType === "high") points = 150;
-      else if (killType === "melee") points = 200;
-      else if (killType === "grenade") points = 180;
+      if (killType === "high") {
+        points = 150;
+        st.high += 1;
+      } else if (killType === "melee") {
+        points = 200;
+        st.melee += 1;
+      } else if (killType === "grenade") {
+        points = 180;
+        st.grenade += 1;
+      }
 
       // 連続キル（5秒以内）
       const last = this.lastKillAt.get(shooterId) ?? -99999;
-      if (now - last <= 5000) points += 50;
+      if (now - last <= 5000) {
+        points += 50;
+        st.streak += 1;
+      }
       this.lastKillAt.set(shooterId, now);
 
       // アシスト（HP50以上削った別プレイヤー）
@@ -183,6 +202,18 @@ export class TDMLogic {
   }
 
   shared(respawn: Record<string, number>): TDMShared {
+    const players = [...this.stats.entries()].map(([id, s]) => ({
+      playerId: id,
+      team: this.teams.get(id) ?? "RED",
+      kills: s.kills,
+      deaths: s.deaths,
+      assists: s.assists,
+      score: s.score,
+      high: s.high,
+      melee: s.melee,
+      grenade: s.grenade,
+      streak: s.streak,
+    }));
     return {
       phase: this.phase,
       timeRemaining: Math.ceil(this.timeRemaining),
@@ -192,6 +223,7 @@ export class TDMLogic {
       teams: Object.fromEntries(this.teams),
       respawn,
       winner: this.winner,
+      players,
     };
   }
 
