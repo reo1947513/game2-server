@@ -157,7 +157,7 @@ export class CoopLogic {
         }
         e.y += (ty - e.y) * Math.min(1, dt * 4);
         if (horiz <= contact && e.attackCd <= 0) {
-          this.hurtPlayer(target);
+          this.hurtPlayer(target, e.touch);
           e.attackCd = ATTACK_CD;
         }
       }
@@ -198,30 +198,16 @@ export class CoopLogic {
     this.checkWipe(actors);
   }
 
-  private hurtPlayer(a: CoopActor): void {
+  // 接触した敵の威力でダメージを与える（touch は接触した敵の値をそのまま渡す）。
+  private hurtPlayer(a: CoopActor, touch: number): void {
     const st = this.stats.get(a.id);
     if (!st || st.status !== "ALIVE") return;
-    a.hp = Math.max(0, a.hp - this.enemyTouch(a));
+    a.hp = Math.max(0, a.hp - touch);
     if (a.hp <= 0) {
       st.status = "DOWN";
       st.downTimer = 0;
       st.reviveProgress = 0;
     }
-  }
-
-  // 直近に接触した敵の威力を引くため、最寄り敵のtouchを使う（簡易）。
-  private enemyTouch(a: CoopActor): number {
-    if (!a.state) return 12;
-    let best = 12;
-    let bestD = Infinity;
-    for (const e of this.enemies) {
-      const d = Math.hypot(a.state.position.x - e.x, a.state.position.z - e.z);
-      if (d < bestD) {
-        bestD = d;
-        best = e.touch;
-      }
-    }
-    return best;
   }
 
   private handleRevive(dt: number, actors: Map<string, CoopActor>): void {
