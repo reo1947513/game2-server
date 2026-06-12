@@ -2,13 +2,16 @@ import {
   PlayerState,
   Vec3,
   Box,
-  EnemyType,
   ServerEnemyState,
   CoopShared,
   CoopStatus,
   GameEvent,
 } from "./netTypes";
 import { rayBox } from "./hitscan";
+
+// コープが扱う敵種別。共有 EnemyType はタワー用に拡張されたが、コープ内部では
+// この3種（grunt/fast/boss）だけを使うため、専用の狭い型に固定して網羅性を保つ。
+type CoopEnemyType = "grunt" | "fast" | "boss";
 
 // Room の RoomPlayer はこの形を構造的に満たす（hp はここで書き換える）。
 export interface CoopActor {
@@ -19,7 +22,7 @@ export interface CoopActor {
 
 interface Enemy {
   id: string;
-  etype: EnemyType;
+  etype: CoopEnemyType;
   x: number;
   y: number;
   z: number;
@@ -45,7 +48,7 @@ interface CoopStat {
   score: number;
 }
 
-const BASE: Record<EnemyType, { hp: number; speed: number; touch: number; half: number; height: number; pts: number }> = {
+const BASE: Record<CoopEnemyType, { hp: number; speed: number; touch: number; half: number; height: number; pts: number }> = {
   grunt: { hp: 60, speed: 3.0, touch: 12, half: 0.45, height: 1.8, pts: 100 },
   fast: { hp: 45, speed: 4.2, touch: 10, half: 0.4, height: 1.7, pts: 120 },
   boss: { hp: 480, speed: 3.6, touch: 26, half: 0.9, height: 2.6, pts: 1000 },
@@ -447,17 +450,17 @@ export class CoopLogic {
     }
   }
 
-  private composition(n: number): EnemyType[] {
-    if (n === 1) return Array<EnemyType>(6).fill("grunt");
-    if (n === 2) return [...Array<EnemyType>(6).fill("grunt"), "fast", "fast"];
-    if (n === 3) return Array<EnemyType>(10).fill("grunt");
-    if (n === 4) return ["boss", ...Array<EnemyType>(4).fill("grunt")];
+  private composition(n: number): CoopEnemyType[] {
+    if (n === 1) return Array<CoopEnemyType>(6).fill("grunt");
+    if (n === 2) return [...Array<CoopEnemyType>(6).fill("grunt"), "fast", "fast"];
+    if (n === 3) return Array<CoopEnemyType>(10).fill("grunt");
+    if (n === 4) return ["boss", ...Array<CoopEnemyType>(4).fill("grunt")];
     const grunts = 4 + (n - 4);
     const fasts = n - 4;
-    return ["boss", ...Array<EnemyType>(grunts).fill("grunt"), ...Array<EnemyType>(fasts).fill("fast")];
+    return ["boss", ...Array<CoopEnemyType>(grunts).fill("grunt"), ...Array<CoopEnemyType>(fasts).fill("fast")];
   }
 
-  private makeEnemy(etype: EnemyType, x: number, y: number, z: number, wave: number): Enemy {
+  private makeEnemy(etype: CoopEnemyType, x: number, y: number, z: number, wave: number): Enemy {
     const b = BASE[etype];
     let hp = b.hp;
     let speed = b.speed;
