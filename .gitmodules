@@ -1,0 +1,3 @@
+[submodule "src/shared"]
+	path = src/shared
+	url = https://github.com/reo1947513/game2-shared.git
