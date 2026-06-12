@@ -101,6 +101,49 @@ function handle(conn: Conn, msg: ClientMessage): void {
       break;
     }
 
+    case "SET_COLLIDERS": {
+      if (!conn.roomCode || !conn.playerId) break;
+      const room = rooms.get(conn.roomCode);
+      // ホストのステージ形状を採用する
+      if (room && room.hostId === conn.playerId) room.setColliders(msg.payload.colliders);
+      break;
+    }
+
+    case "SHOT": {
+      if (!conn.roomCode || !conn.playerId) break;
+      const room = rooms.get(conn.roomCode);
+      room?.setRtt(conn.playerId, msg.payload.rtt);
+      room?.processShot(
+        conn.playerId,
+        msg.payload.origin,
+        msg.payload.direction,
+        msg.payload.rtt,
+        msg.payload.damage,
+        Date.now()
+      );
+      break;
+    }
+
+    case "THROW_GRENADE": {
+      if (!conn.roomCode || !conn.playerId) break;
+      const room = rooms.get(conn.roomCode);
+      room?.throwGrenade(
+        conn.playerId,
+        msg.payload.gtype,
+        msg.payload.origin,
+        msg.payload.velocity
+      );
+      break;
+    }
+
+    case "PING": {
+      send(conn.ws, {
+        type: "PONG",
+        payload: { clientTime: msg.payload.clientTime, serverTime: Date.now() },
+      });
+      break;
+    }
+
     case "START_GAME": {
       if (!conn.roomCode || !conn.playerId) break;
       const room = rooms.get(conn.roomCode);
@@ -134,10 +177,11 @@ function leave(conn: Conn): void {
   conn.playerId = null;
 }
 
-// ===== 20tick/s（50ms）で全ルームに WORLD_STATE をブロードキャスト =====
+// ===== 20tick/s（50ms）：戦闘シミュレーションを進めて WORLD_STATE をブロードキャスト =====
 setInterval(() => {
+  const now = Date.now();
   rooms.forEach((room) => {
-    room.broadcast({ type: "WORLD_STATE", payload: room.worldState() });
+    room.broadcast({ type: "WORLD_STATE", payload: room.tick(0.05, now) });
   });
 }, 50);
 
