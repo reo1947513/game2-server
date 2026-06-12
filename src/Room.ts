@@ -13,6 +13,7 @@ import { StateHistory } from "./StateHistory";
 import { ServerGrenade } from "./ServerGrenade";
 import { hitscan } from "./hitscan";
 import { TDMLogic, KillType } from "./TDMLogic";
+import { CoopLogic, CoopActor } from "./CoopLogic";
 import { saveMatch } from "./supabase";
 
 interface RoomPlayer {
@@ -48,6 +49,13 @@ export class Room {
   private tdm: TDMLogic | null = null;
   private matchStartedAt = 0;
   private savedResult = false;
+
+  // ===== コープ・ガントレット（mode === "coop" のとき有効） =====
+  private coop: CoopLogic | null = null;
+
+  private actors(): Map<string, CoopActor> {
+    return this.players as unknown as Map<string, CoopActor>;
+  }
 
   constructor(
     public code: string,
@@ -114,6 +122,23 @@ export class Room {
     }
   }
 
+  // コープ・ガントレットを開始する。
+  startCoop(now: number): void {
+    this.coop = new CoopLogic();
+    this.coop.start(this.actors());
+    this.matchStartedAt = now;
+    this.savedResult = false;
+    for (const p of this.players.values()) {
+      p.hp = 100;
+      p.respawnAt = 0;
+    }
+  }
+
+  // 蘇生入力（Eキー長押し）の状態をコープへ伝える。
+  setRevive(id: string, active: boolean): void {
+    if (this.coop) this.coop.setRevive(id, active);
+  }
+
   // ダメージ適用の一元化。HITイベントを積み、撃破時はKILL／TDMスコアと復活予約を行う。
   private applyDamage(
     attackerId: string,
@@ -170,6 +195,20 @@ export class Room {
     if (!shooter || shooter.hp <= 0) return;
     if (this.tdm && this.tdm.phase !== "PLAYING") return;
 
+    // コープ：プレイヤーではなく敵に当てる
+    if (this.coop) {
+      this.coop.damageEnemyShot(
+        origin,
+        direction,
+        this.colliders,
+        damage,
+        shooterId,
+        this.pendingEvents,
+        this.tickCount
+      );
+      return;
+    }
+
     const compensated = now - rtt / 2 - RENDER_DELAY;
     const snap = this.history.getAt(compensated);
     const states = snap ? snap.states : this.currentStates();
@@ -195,6 +234,12 @@ export class Room {
 
     const range = kind === "knife" ? 2.5 : 2.7;
     const dmg = kind === "knife" ? 100 : 45;
+
+    // コープ：敵に当てる
+    if (this.coop) {
+      this.coop.meleeEnemies(a.state.position, a.state.yaw, a.state.pitch, range, dmg, attackerId);
+      return;
+    }
     const cp = Math.cos(a.state.pitch);
     const sp = Math.sin(a.state.pitch);
     const fx = -cp * Math.sin(a.state.yaw);
@@ -239,12 +284,14 @@ export class Room {
         this.projectiles.splice(i, 1);
       }
     }
-    // 復活（HP回復のみ。位置はクライアントが自分で戻す）
-    for (const p of this.players.values()) {
-      if (p.hp <= 0 && p.respawnAt > 0 && now >= p.respawnAt) {
-        p.hp = 100;
-        p.respawnAt = 0;
-        if (this.tdm) this.tdm.onRespawn(p.id);
+    // 復活（HP回復のみ。位置はクライアントが自分で戻す）。コープはダウン/蘇生制のため対象外。
+    if (!this.coop) {
+      for (const p of this.players.values()) {
+        if (p.hp <= 0 && p.respawnAt > 0 && now >= p.respawnAt) {
+          p.hp = 100;
+          p.respawnAt = 0;
+          if (this.tdm) this.tdm.onRespawn(p.id);
+        }
       }
     }
     // チームデスマッチのタイマーと終了判定
@@ -252,20 +299,34 @@ export class Room {
       this.tdm.tick(dt);
       if (this.tdm.consumeEnded()) void this.saveResult(now);
     }
+    // コープ：敵AI・Wave進行・蘇生・全滅判定
+    if (this.coop) {
+      this.coop.tick(dt, this.actors(), this.colliders);
+      if (this.coop.consumeEnded()) void this.saveResult(now);
+    }
     return this.buildWorldState(now);
   }
 
   // 試合結果を Supabase へ保存する（環境変数が無ければ supabase 側でスキップ）。
   private async saveResult(now: number): Promise<void> {
-    if (!this.tdm || this.savedResult) return;
+    if (this.savedResult) return;
+    let result: Record<string, unknown>;
+    let players: Array<{ playerId: string; kills: number; deaths: number; score: number; coopWave?: number }>;
+    if (this.coop) {
+      result = this.coop.resultData();
+      players = this.coop.playerSummaries();
+    } else if (this.tdm) {
+      result = this.tdm.resultData();
+      players = [...this.tdm.stats.entries()].map(([id, s]) => ({
+        playerId: id,
+        kills: s.kills,
+        deaths: s.deaths,
+        score: s.score,
+      }));
+    } else {
+      return;
+    }
     this.savedResult = true;
-    const result = this.tdm.resultData();
-    const players = [...this.tdm.stats.entries()].map(([id, s]) => ({
-      playerId: id,
-      kills: s.kills,
-      deaths: s.deaths,
-      score: s.score,
-    }));
     await saveMatch({
       roomCode: this.code,
       mode: this.mode,
@@ -279,20 +340,25 @@ export class Room {
   private detonate(g: ServerGrenade, now: number): void {
     const pos = g.position;
     if (g.type === "frag") {
-      // 範囲内のプレイヤーへダメージ（投擲者は自爆ダメージ控えめ）
-      for (const p of this.players.values()) {
-        if (p.hp <= 0 || !p.state) continue;
-        const cx = p.state.position.x;
-        const cy = p.state.position.y + 1.0;
-        const cz = p.state.position.z;
-        const d = Math.hypot(cx - pos.x, cy - pos.y, cz - pos.z);
-        if (d > FRAG_RADIUS) continue;
-        const falloff = 1 - d / FRAG_RADIUS;
-        const dmg =
-          p.id === g.ownerId
-            ? Math.round(55 * falloff)
-            : Math.round(Math.max(15, 120 * falloff));
-        this.applyDamage(g.ownerId, p.id, dmg, "grenade", now);
+      if (this.coop) {
+        // コープ：範囲内の敵へダメージ（プレイヤー同士の被弾はなし）
+        this.coop.grenadeEnemies(pos, FRAG_RADIUS, g.ownerId);
+      } else {
+        // 範囲内のプレイヤーへダメージ（投擲者は自爆ダメージ控えめ）
+        for (const p of this.players.values()) {
+          if (p.hp <= 0 || !p.state) continue;
+          const cx = p.state.position.x;
+          const cy = p.state.position.y + 1.0;
+          const cz = p.state.position.z;
+          const d = Math.hypot(cx - pos.x, cy - pos.y, cz - pos.z);
+          if (d > FRAG_RADIUS) continue;
+          const falloff = 1 - d / FRAG_RADIUS;
+          const dmg =
+            p.id === g.ownerId
+              ? Math.round(55 * falloff)
+              : Math.round(Math.max(15, 120 * falloff));
+          this.applyDamage(g.ownerId, p.id, dmg, "grenade", now);
+        }
       }
       this.pendingEvents.push({
         type: "GRENADE_EXPLODE",
@@ -350,6 +416,7 @@ export class Room {
       events,
       lastProcessedSeq,
       tdm: tdmShared,
+      coop: this.coop ? this.coop.shared(this.actors()) : undefined,
     };
   }
 

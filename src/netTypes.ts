@@ -56,6 +56,39 @@ export interface TDMShared {
   winner?: Team | "DRAW";
 }
 
+// ===== コープ・ガントレット =====
+export type EnemyType = "grunt" | "fast" | "boss";
+
+export interface ServerEnemyState {
+  id: string;
+  etype: EnemyType;
+  position: Vec3;
+  hp: number;
+  maxHp: number;
+}
+
+export type CoopStatus = "ALIVE" | "DOWN" | "DEAD";
+
+export interface CoopPlayerShared {
+  playerId: string;
+  status: CoopStatus;
+  hp: number;
+  downTimer: number; // 0..5（フィニッシュまでの秒）
+  reviveProgress: number; // 0..5（蘇生完了までの秒）
+  score: number;
+}
+
+export interface CoopShared {
+  phase: "WAVE" | "REST" | "RESULT";
+  currentWave: number;
+  restCountdown: number; // 秒
+  enemiesRemaining: number;
+  enemies: ServerEnemyState[];
+  players: CoopPlayerShared[];
+  totalScore: number;
+  wipe?: boolean; // RESULT時：全滅したか
+}
+
 // ロビーに出すプレイヤー情報。
 export interface PlayerInfo {
   playerId: string;
@@ -72,6 +105,7 @@ export interface WorldState {
   events: GameEvent[]; // このtickで発生した単発イベント
   lastProcessedSeq: Record<string, number>; // プレイヤーごとの処理済みseq
   tdm?: TDMShared; // チームデスマッチ時のみ
+  coop?: CoopShared; // コープ・ガントレット時のみ
 }
 
 export type ErrorCode =
@@ -92,6 +126,7 @@ export type ClientMessage =
   | { type: "SHOT"; payload: { origin: Vec3; direction: Vec3; seq: number; rtt: number; damage: number } }
   | { type: "THROW_GRENADE"; payload: { gtype: "frag" | "flash"; origin: Vec3; velocity: Vec3 } }
   | { type: "MELEE_HIT"; payload: { kind: "knife" | "kick" } }
+  | { type: "REVIVE"; payload: { active: boolean } }
   | { type: "PING"; payload: { clientTime: number } };
 
 // ===== サーバー → クライアント =====

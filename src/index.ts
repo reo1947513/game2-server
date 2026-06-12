@@ -143,6 +143,13 @@ function handle(conn: Conn, msg: ClientMessage): void {
       break;
     }
 
+    case "REVIVE": {
+      if (!conn.roomCode || !conn.playerId) break;
+      const room = rooms.get(conn.roomCode);
+      room?.setRevive(conn.playerId, msg.payload.active);
+      break;
+    }
+
     case "PING": {
       send(conn.ws, {
         type: "PONG",
@@ -156,6 +163,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       const room = rooms.get(conn.roomCode);
       if (room && room.hostId === conn.playerId) {
         if (room.mode === "tdm") room.startTDM(Date.now());
+        else if (room.mode === "coop") room.startCoop(Date.now());
         room.broadcast({
           type: "GAME_START",
           payload: { mode: room.mode, stage: room.stage },
