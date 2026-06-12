@@ -1,6 +1,11 @@
 [build]
 builder = "nixpacks"
-buildCommand = "git submodule update --init && npm run build"
+# 共有型サブモジュール（src/shared）は Nixpacks のビルド文脈に .git ごと展開されないため、
+# `git submodule update` は使えない（fatal: not a git repository で失敗する）。
+# protocol.ts が無いときだけ公開リポジトリから superproject が固定しているコミットを clone する
+# （既に存在する場合は何もしないので、ローカルや正常時は無影響）。
+# 共有型を更新したら、このコミットハッシュとクライアント Dockerfile のハッシュを両方更新する。
+buildCommand = "if [ ! -f src/shared/protocol.ts ]; then rm -rf src/shared && git clone https://github.com/reo1947513/game2-shared.git src/shared && git -C src/shared checkout 96b69dd051b4dafc770fee4029f4ff6f1aa24fa2; fi && npm run build"
 
 [deploy]
 startCommand = "npm run start"
