@@ -451,6 +451,10 @@ export class Room {
         kills: s.kills,
         deaths: s.deaths,
         score: s.score,
+        rooftopKills: s.kills,
+        rooftopHeadshots: s.headshots,
+        rooftopWins: s.roundWins,
+        rooftopLongest: s.longestShot,
       }));
     } else {
       return;

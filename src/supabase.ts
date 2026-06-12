@@ -21,6 +21,11 @@ export interface MatchPlayerSummary {
   deaths: number;
   score: number;
   coopWave?: number;
+  // ROOFTOP DUEL の集計（rooftop モード時のみ。player_stats の rooftop_* 列へ加算）。
+  rooftopKills?: number;
+  rooftopHeadshots?: number;
+  rooftopWins?: number;
+  rooftopLongest?: number; // 最長射撃距離（m）。greatest で最大値を保持。
 }
 
 export interface MatchRecord {
@@ -73,6 +78,10 @@ export async function saveMatch(rec: MatchRecord): Promise<void> {
           p_deaths: p.deaths,
           p_coop_wave: p.coopWave ?? 0,
           p_score: p.score,
+          p_rooftop_kills: p.rooftopKills ?? 0,
+          p_rooftop_headshots: p.rooftopHeadshots ?? 0,
+          p_rooftop_wins: p.rooftopWins ?? 0,
+          p_rooftop_longest: p.rooftopLongest ?? 0,
         })
       )
     );
