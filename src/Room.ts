@@ -14,6 +14,7 @@ import { ServerGrenade } from "./ServerGrenade";
 import { hitscan } from "./hitscan";
 import { TDMLogic, KillType } from "./TDMLogic";
 import { CoopLogic, CoopActor } from "./CoopLogic";
+import { RooftopDuelLogic } from "./RooftopDuelLogic";
 import { saveMatch } from "./supabase";
 
 interface RoomPlayer {
@@ -55,6 +56,9 @@ export class Room {
   private coop: CoopLogic | null = null;
   private coopPendingStart = false; // 初回Waveの湧き待ち（プレイヤー位置が揃うのを待つ）
   private coopStartDeadline = 0; // 揃わない場合のフォールバック期限（ms）
+
+  // ===== ROOFTOP DUEL（mode === "rooftop" のとき有効） =====
+  private rooftop: RooftopDuelLogic | null = null;
 
   private actors(): Map<string, CoopActor> {
     return this.players as unknown as Map<string, CoopActor>;
@@ -150,6 +154,26 @@ export class Room {
     }
   }
 
+  // ROOFTOP DUEL を開始する（ホストの START_GAME 時に index から呼ぶ）。
+  startRooftop(now: number): void {
+    this.rooftop = new RooftopDuelLogic();
+    this.rooftop.start([...this.players.keys()], this.maxPlayers);
+    this.matchStartedAt = now;
+    this.savedResult = false;
+    for (const p of this.players.values()) {
+      p.hp = 100;
+      p.respawnAt = 0;
+    }
+  }
+
+  // ジップライン乗り込み要求（ROOFTOP DUEL）。承認結果は次tickの WorldState.rooftop で配る。
+  useZipline(playerId: string, ziplineId: string, now: number): void {
+    if (!this.rooftop) return;
+    const p = this.players.get(playerId);
+    if (!p || !p.state || p.hp <= 0) return;
+    this.rooftop.useZipline(playerId, ziplineId, p.state.position, now);
+  }
+
   // 蘇生入力（Eキー長押し）の状態をコープへ伝える。
   setRevive(id: string, active: boolean): void {
     if (this.coop) this.coop.setRevive(id, active);
@@ -171,6 +195,8 @@ export class Room {
   ): void {
     const victim = this.players.get(victimId);
     if (!victim || victim.hp <= 0) return;
+    // ROOFTOP：リスポーン直後の無敵中はダメージを無効化する。
+    if (this.rooftop && this.rooftop.isInvulnerable(victimId, now)) return;
     // TDM：途中参加者をチームへ割り当ててから、同チームへのダメージは無効化する（自爆は許可）
     if (this.tdm) {
       this.tdm.ensureMember(attackerId);
@@ -198,9 +224,18 @@ export class Room {
     });
 
     if (victim.hp <= 0) {
-      victim.respawnAt = now + RESPAWN_DELAY;
+      victim.respawnAt = now + (this.rooftop ? 4000 : RESPAWN_DELAY);
       if (this.tdm) {
         this.tdm.onKill(attackerId, victimId, killType, now, this.pendingEvents, this.tickCount);
+      } else if (this.rooftop) {
+        this.rooftop.onKill(
+          attackerId,
+          victimId,
+          { headshot, melee: killType === "melee" },
+          now,
+          this.pendingEvents,
+          this.tickCount
+        );
       } else {
         this.pendingEvents.push({
           type: "KILL",
@@ -223,6 +258,7 @@ export class Room {
     const shooter = this.players.get(shooterId);
     if (!shooter || shooter.hp <= 0) return;
     if (this.tdm && this.tdm.phase !== "PLAYING") return;
+    if (this.rooftop && this.rooftop.phase !== "PLAYING") return;
 
     // コープ：プレイヤーではなく敵に当てる
     if (this.coop) {
@@ -240,7 +276,10 @@ export class Room {
     const target = this.players.get(hit.targetId);
     if (!target || target.hp <= 0) return;
 
-    const dmg = hit.headshot ? damage * 2 : damage;
+    // ROOFTOP：武器制限（クライアントはスナイパー固定）。基礎威力をスナイパー上限100へclampして
+    // 不正な水増しダメージを防ぐ。ヘッドショットは2倍＝200で頭1発確殺。
+    const base = this.rooftop ? Math.min(damage, 100) : damage;
+    const dmg = hit.headshot ? base * 2 : base;
     // 高所キル判定：射撃者の高さが3m以上なら "high"（150点）。
     const shooterY = shooter.state ? shooter.state.position.y : 0;
     const killType: KillType = shooterY >= 3 ? "high" : "normal";
@@ -252,6 +291,7 @@ export class Room {
     const a = this.players.get(attackerId);
     if (!a || a.hp <= 0 || !a.state) return;
     if (this.tdm && this.tdm.phase !== "PLAYING") return;
+    if (this.rooftop && this.rooftop.phase !== "PLAYING") return;
 
     const range = kind === "knife" ? 2.5 : 2.7;
     const dmg = kind === "knife" ? 100 : 45;
@@ -289,6 +329,8 @@ export class Room {
     origin: Vec3,
     velocity: Vec3
   ): void {
+    // ROOFTOP：グレネードは使用不可（サーバーが拒否する）。
+    if (this.rooftop) return;
     const fuse = gtype === "frag" ? FRAG_FUSE : FLASH_FUSE;
     this.projectiles.push(
       new ServerGrenade(uuidv4(), gtype, origin, velocity, fuse, ownerId)
@@ -307,12 +349,17 @@ export class Room {
     }
     // 復活（HP回復のみ。位置はクライアントが自分で戻す）。コープはダウン/蘇生制のため対象外。
     // TDMはPLAYING中のみ復活させる（RESULT中に死亡者を蘇らせない）。
-    if (!this.coop && (!this.tdm || this.tdm.phase === "PLAYING")) {
+    if (
+      !this.coop &&
+      (!this.tdm || this.tdm.phase === "PLAYING") &&
+      (!this.rooftop || this.rooftop.phase === "PLAYING")
+    ) {
       for (const p of this.players.values()) {
         if (p.hp <= 0 && p.respawnAt > 0 && now >= p.respawnAt) {
           p.hp = 100;
           p.respawnAt = 0;
           if (this.tdm) this.tdm.onRespawn(p.id);
+          if (this.rooftop) this.rooftop.onRespawn(p.id, now);
         }
       }
     }
@@ -320,6 +367,11 @@ export class Room {
     if (this.tdm) {
       this.tdm.tick(dt);
       if (this.tdm.consumeEnded()) void this.saveResult(now);
+    }
+    // ROOFTOP DUEL：タイマー・ジップライン解放・終了判定
+    if (this.rooftop) {
+      this.rooftop.tick(dt, now);
+      if (this.rooftop.consumeEnded()) void this.saveResult(now);
     }
     // コープ：敵AI・Wave進行・蘇生・全滅判定
     if (this.coop) {
@@ -355,6 +407,14 @@ export class Room {
     } else if (this.tdm) {
       result = this.tdm.resultData();
       players = [...this.tdm.stats.entries()].map(([id, s]) => ({
+        playerId: this.statsIdOf(id),
+        kills: s.kills,
+        deaths: s.deaths,
+        score: s.score,
+      }));
+    } else if (this.rooftop) {
+      result = this.rooftop.resultData();
+      players = [...this.rooftop.stats.entries()].map(([id, s]) => ({
         playerId: this.statsIdOf(id),
         kills: s.kills,
         deaths: s.deaths,
@@ -447,6 +507,18 @@ export class Room {
       tdmShared = this.tdm.shared(respawn);
     }
 
+    let rooftopShared: WorldState["rooftop"];
+    if (this.rooftop) {
+      const alive: Record<string, { alive: boolean; respawn: number }> = {};
+      for (const p of this.players.values()) {
+        alive[p.id] = {
+          alive: p.hp > 0,
+          respawn: p.respawnAt > 0 ? Math.max(0, (p.respawnAt - now) / 1000) : 0,
+        };
+      }
+      rooftopShared = this.rooftop.shared(now, alive);
+    }
+
     return {
       tick: this.tickCount,
       timestamp: now,
@@ -456,6 +528,7 @@ export class Room {
       lastProcessedSeq,
       tdm: tdmShared,
       coop: this.coop ? this.coop.shared(this.actors()) : undefined,
+      rooftop: rooftopShared,
     };
   }
 

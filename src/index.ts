@@ -161,6 +161,13 @@ function handle(conn: Conn, msg: ClientMessage): void {
       break;
     }
 
+    case "USE_ZIPLINE": {
+      if (!conn.roomCode || !conn.playerId) break;
+      const room = rooms.get(conn.roomCode);
+      room?.useZipline(conn.playerId, msg.payload.ziplineId, Date.now());
+      break;
+    }
+
     case "PING": {
       send(conn.ws, {
         type: "PONG",
@@ -175,6 +182,7 @@ function handle(conn: Conn, msg: ClientMessage): void {
       if (room && room.hostId === conn.playerId) {
         if (room.mode === "tdm") room.startTDM(Date.now());
         else if (room.mode === "coop") room.startCoop(Date.now());
+        else if (room.mode === "rooftop") room.startRooftop(Date.now());
         room.broadcast({
           type: "GAME_START",
           payload: { mode: room.mode, stage: room.stage },
