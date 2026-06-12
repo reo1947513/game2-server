@@ -225,12 +225,13 @@ export class CoopLogic {
   }
 
   private handleRevive(dt: number, actors: Map<string, CoopActor>): void {
-    const progressed = new Set<string>();
+    // ダウン者ごとに蘇生役を1人だけ割り当てる（複数人が押しても進捗加算は1回）。
+    const reviverOf = new Map<string, string>(); // downId → reviverId
     for (const reviver of actors.values()) {
       const rst = this.stats.get(reviver.id);
       if (!rst || rst.status !== "ALIVE" || !reviver.state) continue;
       if (!this.reviveIntent.get(reviver.id)) continue;
-      // 最寄りのダウン中の味方
+      // 最寄りのダウン中の味方を蘇生対象にする
       let target: CoopActor | null = null;
       let bestD = REVIVE_RANGE;
       for (const a of actors.values()) {
@@ -246,20 +247,29 @@ export class CoopLogic {
           target = a;
         }
       }
-      if (target) {
-        const st = this.stats.get(target.id)!;
-        st.reviveProgress += dt;
-        progressed.add(target.id);
-        if (st.reviveProgress >= REVIVE_SECONDS) {
-          st.status = "ALIVE";
-          st.reviveProgress = 0;
-          st.downTimer = 0;
-          target.hp = 30;
-          rst.score += REVIVE_BONUS;
-          this.totalScore += REVIVE_BONUS;
-        }
+      // 同じダウン者には先に見つかった蘇生役だけを記録する
+      if (target && !reviverOf.has(target.id)) reviverOf.set(target.id, reviver.id);
+    }
+
+    // ダウン者ごとに dt を1回だけ進める
+    const progressed = new Set<string>();
+    for (const [downId, reviverId] of reviverOf) {
+      const st = this.stats.get(downId);
+      if (!st || st.status !== "DOWN") continue;
+      st.reviveProgress += dt;
+      progressed.add(downId);
+      if (st.reviveProgress >= REVIVE_SECONDS) {
+        st.status = "ALIVE";
+        st.reviveProgress = 0;
+        st.downTimer = 0;
+        const tgt = actors.get(downId);
+        if (tgt) tgt.hp = 30;
+        const rst = this.stats.get(reviverId);
+        if (rst) rst.score += REVIVE_BONUS;
+        this.totalScore += REVIVE_BONUS;
       }
     }
+
     // 蘇生されていないダウン者は進行を巻き戻す
     for (const [id, st] of this.stats) {
       if (st.status === "DOWN" && !progressed.has(id)) {
