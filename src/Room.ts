@@ -53,6 +53,8 @@ export class Room {
 
   // ===== コープ・ガントレット（mode === "coop" のとき有効） =====
   private coop: CoopLogic | null = null;
+  private coopPendingStart = false; // 初回Waveの湧き待ち（プレイヤー位置が揃うのを待つ）
+  private coopStartDeadline = 0; // 揃わない場合のフォールバック期限（ms）
 
   private actors(): Map<string, CoopActor> {
     return this.players as unknown as Map<string, CoopActor>;
@@ -134,10 +136,12 @@ export class Room {
     }
   }
 
-  // コープ・ガントレットを開始する。
+  // コープ・ガントレットを開始する。初回Waveはプレイヤー位置が揃ってから湧かせる。
   startCoop(now: number): void {
     this.coop = new CoopLogic();
     this.coop.start(this.actors());
+    this.coopPendingStart = true;
+    this.coopStartDeadline = now + 3000; // 3秒で揃わなければ重心フォールバックで開始
     this.matchStartedAt = now;
     this.savedResult = false;
     for (const p of this.players.values()) {
@@ -311,9 +315,19 @@ export class Room {
     }
     // コープ：敵AI・Wave進行・蘇生・全滅判定
     if (this.coop) {
-      this.coop.tick(dt, this.actors(), this.colliders);
-      for (const e of this.coop.drainEvents()) this.pendingEvents.push(e);
-      if (this.coop.consumeEnded()) void this.saveResult(now);
+      if (this.coopPendingStart) {
+        // 全プレイヤーの位置が揃う（またはタイムアウト）まで初回Waveを湧かせない
+        const ready =
+          this.players.size > 0 && [...this.players.values()].every((p) => p.state !== null);
+        if (ready || now >= this.coopStartDeadline) {
+          this.coop.beginFirstWave(this.actors());
+          this.coopPendingStart = false;
+        }
+      } else {
+        this.coop.tick(dt, this.actors(), this.colliders);
+        for (const e of this.coop.drainEvents()) this.pendingEvents.push(e);
+        if (this.coop.consumeEnded()) void this.saveResult(now);
+      }
     }
     return this.buildWorldState(now);
   }

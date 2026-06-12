@@ -97,6 +97,11 @@ export class CoopLogic {
       this.stats.set(a.id, { status: "ALIVE", downTimer: 0, reviveProgress: 0, score: 0 });
       a.hp = 100;
     }
+    // 初回Waveのスポーンは beginFirstWave まで遅延する（プレイヤー位置が揃ってから湧かせる）。
+  }
+
+  // 最初のWaveを湧かせる。プレイヤーのPLAYER_STATEが揃ってから Room が呼ぶ。
+  beginFirstWave(actors: Map<string, CoopActor>): void {
     this.spawnWave(1, actors);
   }
 
