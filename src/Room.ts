@@ -299,7 +299,8 @@ export class Room {
       }
     }
     // 復活（HP回復のみ。位置はクライアントが自分で戻す）。コープはダウン/蘇生制のため対象外。
-    if (!this.coop) {
+    // TDMはPLAYING中のみ復活させる（RESULT中に死亡者を蘇らせない）。
+    if (!this.coop && (!this.tdm || this.tdm.phase === "PLAYING")) {
       for (const p of this.players.values()) {
         if (p.hp <= 0 && p.respawnAt > 0 && now >= p.respawnAt) {
           p.hp = 100;
